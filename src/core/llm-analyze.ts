@@ -14,7 +14,7 @@ export type AnalysisResult = {
   rawText: string;
 };
 
-const OLLAMA_URL = "http://localhost:11434";
+const OLLAMA_URL = "http://127.0.0.1:11434";
 const MODEL = "llama3.2-vision:11b";
 
 const PROMPT = `You are a document analysis assistant for a maintenance purchasing department.
@@ -85,19 +85,29 @@ function imageToBase64(filePath: string): string {
 
 export async function isOllamaAvailable(): Promise<boolean> {
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+
     const res = await fetch(`${OLLAMA_URL}/api/tags`, {
-      signal: AbortSignal.timeout(2000),
+      signal: controller.signal,
     });
+    clearTimeout(timer);
+
     if (!res.ok) return false;
     const data = (await res.json()) as {
       models?: Array<{ name: string }>;
     };
-    // Check that the vision model is actually pulled
-    const hasVision = data.models?.some((m: { name: string }) =>
-      m.name.includes("llama3.2-vision"),
+
+    const models = data.models || [];
+    console.log(
+      `  Ollama models found: ${models.map((m) => m.name).join(", ")}`,
     );
-    return !!hasVision;
-  } catch {
+
+    // Check that a vision model is pulled
+    const hasVision = models.some((m) => m.name.includes("llama3.2-vision"));
+    return hasVision;
+  } catch (err) {
+    console.log(`  Ollama check failed: ${err}`);
     return false;
   }
 }
@@ -175,9 +185,7 @@ export async function analyzeMultipleImages(
     }
   }
 
-  console.log(
-    `  Sending ${files.length} pages to Ollama (${MODEL})...`,
-  );
+  console.log(`  Sending ${files.length} pages to Ollama (${MODEL})...`);
   const start = Date.now();
 
   const response = await fetch(`${OLLAMA_URL}/api/chat`, {
@@ -237,7 +245,7 @@ function parseResponse(content: string): AnalysisResult {
     "amazon.com": "Amazon",
     "home depot": "Home_Depot",
     "the home depot": "Home_Depot",
-    "homedepot": "Home_Depot",
+    homedepot: "Home_Depot",
     mcmaster: "McMaster_Carr",
     "mcmaster-carr": "McMaster_Carr",
     "mcmaster carr": "McMaster_Carr",
@@ -250,9 +258,7 @@ function parseResponse(content: string): AnalysisResult {
 
   const rawVendor = String(parsed.vendor || "").trim();
   const normalizedVendor =
-    vendorMap[rawVendor.toLowerCase()] ||
-    rawVendor.replace(/\s+/g, "_") ||
-    "";
+    vendorMap[rawVendor.toLowerCase()] || rawVendor.replace(/\s+/g, "_") || "";
   const hasVendor = normalizedVendor.length > 0;
 
   // ── Doc type ──
@@ -293,8 +299,7 @@ function parseResponse(content: string): AnalysisResult {
 
   // ── Description (cap at 120 chars) ──
   const rawDesc = String(parsed.description || "").trim();
-  const desc =
-    rawDesc.length > 120 ? rawDesc.slice(0, 117) + "..." : rawDesc;
+  const desc = rawDesc.length > 120 ? rawDesc.slice(0, 117) + "..." : rawDesc;
 
   return {
     vendor: {
