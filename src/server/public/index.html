@@ -249,6 +249,7 @@
     <div class="header">
       <h1>📄 Doc Organizer</h1>
       <p>Drop your scanned documents — the tool reads and organizes them</p>
+      <p id="modeIndicator" style="color: #4ecca3; font-size: 0.75rem; margin-top: 0.3rem"></p>
     </div>
 
     <!-- Step 1: Drop files -->
@@ -331,6 +332,22 @@
       let vendors = [];
       let docTypes = [];
       let pageQueue = []; // files staged for multi-page mode
+      let analysisMode = "ocr"; // "llm" or "ocr"
+
+      // Check analysis mode on load
+      fetch("/api/mode")
+        .then((r) => r.json())
+        .then((data) => {
+          analysisMode = data.mode;
+          const indicator = document.getElementById("modeIndicator");
+          if (data.mode === "llm") {
+            indicator.textContent = "🧠 LLM Vision mode (Ollama)";
+          } else {
+            indicator.textContent = "📝 OCR mode (Tesseract)";
+            indicator.style.color = "#888";
+          }
+        })
+        .catch(() => {});
 
       // --- Drop zone ---
       const dropzone = document.getElementById("dropzone");
@@ -426,7 +443,9 @@
           : files.length;
         document.getElementById("progressBar").style.width = "30%";
         document.getElementById("progressStatus").textContent =
-          "Uploading and scanning...";
+          analysisMode === "llm"
+            ? "Analyzing with LLM vision — this may take 30-60s per document..."
+            : "Uploading and scanning...";
 
         const form = new FormData();
         files.forEach((f) => form.append("files", f));

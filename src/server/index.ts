@@ -4,12 +4,34 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { extractText } from "../core/ocr.js";
 import { analyzeText } from "../core/analyze.js";
+import {
+  isOllamaAvailable,
+  analyzeImage,
+  analyzeMultipleImages,
+} from "../core/llm-analyze.js";
 
 const app = express();
 const upload = multer({ dest: "uploads/" });
 
 app.use(express.static(path.resolve("src/server/public")));
 app.use(express.json());
+
+// Track whether LLM is available (checked at startup + periodically)
+let useLLM = false;
+
+async function checkOllama() {
+  useLLM = await isOllamaAvailable();
+  console.log(
+    useLLM
+      ? "🧠 Ollama available — using LLM vision"
+      : "📝 Ollama unavailable — falling back to Tesseract OCR",
+  );
+}
+
+// Expose current mode to the UI
+app.get("/api/mode", (_req, res) => {
+  res.json({ mode: useLLM ? "llm" : "ocr" });
+});
 
 const VENDORS = [
   "Amazon",
@@ -31,7 +53,7 @@ const DOC_TYPES = [
   "Invoices",
 ];
 
-// API: Batch upload + analyze via OCR
+// API: Batch upload + analyze via LLM vision (or OCR fallback)
 app.post("/api/analyze-batch", upload.array("files", 50), async (req, res) => {
   try {
     const files = req.files as Express.Multer.File[];
@@ -40,47 +62,55 @@ app.post("/api/analyze-batch", upload.array("files", 50), async (req, res) => {
       return;
     }
 
-    console.log(`\nAnalyzing ${files.length} file(s)...`);
+    const mode = useLLM ? "LLM" : "OCR";
+    console.log(`\nAnalyzing ${files.length} file(s) via ${mode}...`);
 
-    // Process all files in parallel
-    const results = await Promise.all(
-      files.map(async (file) => {
-        try {
-          console.log(`  OCR: ${file.originalname}`);
+    // Process files (sequentially for LLM to avoid overloading, parallel for OCR)
+    const results = [];
+
+    for (const file of files) {
+      try {
+        console.log(`  ${mode}: ${file.originalname}`);
+
+        let analysis;
+        if (useLLM) {
+          analysis = await analyzeImage(file.path, file.originalname);
+        } else {
           const text = await extractText(file.path, file.originalname);
           console.log(`\n--- RAW OCR TEXT (${file.originalname}) ---`);
           console.log(text);
           console.log(`--- END OCR TEXT ---\n`);
-          const analysis = analyzeText(text);
-          console.log(
-            `  Done: ${file.originalname} → ${analysis.vendor.value} / ${analysis.docType.value} / PO: ${analysis.poNumber.value}`,
-          );
-          return {
-            tempFile: file.filename,
-            originalName: file.originalname,
-            analysis,
-            status: "analyzed" as const,
-          };
-        } catch (err) {
-          console.error(`  Error on ${file.originalname}:`, err);
-          return {
-            tempFile: file.filename,
-            originalName: file.originalname,
-            analysis: null,
-            status: "error" as const,
-          };
+          analysis = analyzeText(text);
         }
-      }),
-    );
 
-    res.json({ results, vendors: VENDORS, docTypes: DOC_TYPES });
+        console.log(
+          `  Done: ${file.originalname} → ${analysis.vendor.value} / ${analysis.docType.value} / PO: ${analysis.poNumber.value}`,
+        );
+        results.push({
+          tempFile: file.filename,
+          originalName: file.originalname,
+          analysis,
+          status: "analyzed" as const,
+        });
+      } catch (err) {
+        console.error(`  Error on ${file.originalname}:`, err);
+        results.push({
+          tempFile: file.filename,
+          originalName: file.originalname,
+          analysis: null,
+          status: "error" as const,
+        });
+      }
+    }
+
+    res.json({ results, vendors: VENDORS, docTypes: DOC_TYPES, mode });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Batch analysis failed" });
   }
 });
 
-// API: Multi-page mode — OCR all files and merge text into one result
+// API: Multi-page mode — analyze all files as one document
 app.post(
   "/api/analyze-multipage",
   upload.array("files", 50),
@@ -92,32 +122,42 @@ app.post(
         return;
       }
 
-      console.log(`\nAnalyzing ${files.length} page(s) as ONE document...`);
-
-      // OCR each page in parallel
-      const pages = await Promise.all(
-        files.map(async (file, idx) => {
-          console.log(`  OCR page ${idx + 1}: ${file.originalname}`);
-          const text = await extractText(file.path, file.originalname);
-          return { file, text };
-        }),
+      const mode = useLLM ? "LLM" : "OCR";
+      console.log(
+        `\nAnalyzing ${files.length} page(s) as ONE document via ${mode}...`,
       );
 
-      // Concatenate all page text
-      const combinedText = pages
-        .map((p) => p.text)
-        .join("\n\n--- PAGE BREAK ---\n\n");
-      console.log(`\n--- COMBINED OCR TEXT (${files.length} pages) ---`);
-      console.log(combinedText);
-      console.log(`--- END COMBINED OCR TEXT ---\n`);
+      let analysis;
 
-      const analysis = analyzeText(combinedText);
+      if (useLLM) {
+        // Send all images to the LLM in one request
+        analysis = await analyzeMultipleImages(
+          files.map((f) => ({ path: f.path, originalName: f.originalname })),
+        );
+      } else {
+        // OCR each page and concatenate text
+        const pages = await Promise.all(
+          files.map(async (file, idx) => {
+            console.log(`  OCR page ${idx + 1}: ${file.originalname}`);
+            const text = await extractText(file.path, file.originalname);
+            return { file, text };
+          }),
+        );
+
+        const combinedText = pages
+          .map((p) => p.text)
+          .join("\n\n--- PAGE BREAK ---\n\n");
+        console.log(`\n--- COMBINED OCR TEXT (${files.length} pages) ---`);
+        console.log(combinedText);
+        console.log(`--- END COMBINED OCR TEXT ---\n`);
+
+        analysis = analyzeText(combinedText);
+      }
+
       console.log(
         `  Done: ${files.length} pages → ${analysis.vendor.value} / ${analysis.docType.value} / PO: ${analysis.poNumber.value}`,
       );
 
-      // Return as a single-item result, keeping only the first file as tempFile
-      // (we'll store all temp filenames so confirm can clean them up)
       const results = [
         {
           tempFile: files[0].filename,
@@ -128,7 +168,7 @@ app.post(
         },
       ];
 
-      res.json({ results, vendors: VENDORS, docTypes: DOC_TYPES });
+      res.json({ results, vendors: VENDORS, docTypes: DOC_TYPES, mode });
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: "Multi-page analysis failed" });
@@ -271,6 +311,8 @@ app.post("/api/confirm-batch", async (req, res) => {
 });
 
 const PORT = 3000;
-app.listen(PORT, () => {
-  console.log(`\n📄 Doc Organizer running at http://localhost:${PORT}\n`);
+app.listen(PORT, async () => {
+  console.log(`\n📄 Doc Organizer running at http://localhost:${PORT}`);
+  await checkOllama();
+  console.log("");
 });
