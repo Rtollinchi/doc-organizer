@@ -1,0 +1,11 @@
+node_modules/
+uploads/
+output/
+logs/
+.DS_Store
+eng.traineddata
+*.png
+
+# Test images (keep the Intake folder via .gitkeep)
+example/Intake/*
+!example/Intake/.gitkeep

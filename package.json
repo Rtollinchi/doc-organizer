@@ -1,20 +1,24 @@
 {
   "name": "doc-organizer",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "Scan, rename, and organize business documents via OCR",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "serve": "tsx src/server/index.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "commander": "^13.1.0"
+    "express": "^5.2.1",
+    "multer": "^2.0.2",
+    "sharp": "^0.34.5",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.0.0",
     "@types/node": "^25.2.0",
-    "pkg": "^5.8.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
